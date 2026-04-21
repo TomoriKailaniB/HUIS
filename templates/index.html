@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+
+<html lang = "en">
+	<head>
+		<meta charset = "utf-8" />
+        <meta http-equiv = "X-UA-Compatible" content = "IE=edge">
+        <meta name = "viewport" content = "width = device-width, initial-scale = 1.0"/>
+		<link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+		<title>HUIS Visual Analysis Lab</title>
+	</head>
+	<body>
+		<div class="page">
+			<div class="section">
+				<h1>Welcome to the HUIS Visual Analysis Webapp!</h1>
+				<p>This site will use your camera to take a picture of the fastener you want to analyze</p>
+			</div>
+
+			<div class="camera-container">
+				<div class="video-section">
+					<video id="webcam" autoplay playsinline></video>
+					<canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
+				</div>
+
+				<div class="photo-section">
+					<img id="photo-preview" src="" alt="Captured Photo" style="display:none;">
+				</div>
+			</div>
+
+			<div class="button-container">
+				<button id="start-camera" class="btn btn-primary">Request Camera Permission</button>
+				<button id="capture-photo" class="btn btn-success" style="display:none;">Take Photo</button>
+				<button id="stop-camera" class="btn btn-danger" style="display:none;">Stop Camera</button>
+				<button id="toggle-flash" class="btn btn-info" style="display:none;">Flash: OFF</button>
+				<button id="retake-photo" class="btn btn-warning" style="display:none;">Retake Photo</button>
+				<button id="download-photo" class="btn btn-success" style="display:none;">Download and Open HUIS App</button>
+			</div>
+		</div>
+	</body>
+
+	<script>
+	const video = document.getElementById('webcam');
+	const canvas = document.getElementById('canvas');
+	const photoPreview = document.getElementById('photo-preview');
+	const startBtn = document.getElementById('start-camera');
+	const captureBtn = document.getElementById('capture-photo');
+	const stopBtn = document.getElementById('stop-camera');
+	const flashBtn = document.getElementById('toggle-flash');
+	const retakeBtn = document.getElementById('retake-photo');
+	const downloadBtn = document.getElementById('download-photo');
+	let currentStream = null;
+	let photoDownloadUrl = null;
+	let flashEnabled = false;
+	let flashSupported = false;
+	let imageCaptureObj = null;
+
+	// Function to detect and enable flash
+	async function detectAndEnableFlash() {
+		try {
+			// Using ImageCapture API for better torch control
+			const videoTrack = currentStream.getVideoTracks()[0];
+			if (videoTrack && window.ImageCapture) {
+				imageCaptureObj = new ImageCapture(videoTrack);
+				
+				// Check if torch is supported
+				const capabilities = await imageCaptureObj.getPhotoCapabilities();
+				if (capabilities && capabilities.torch !== undefined) {
+					flashSupported = true;
+					flashBtn.style.display = 'inline-block';
+					console.log("✓ Flash/Torch is supported!");
+					
+					// Auto-enable flash
+					try {
+						await imageCaptureObj.setOptions({ torch: true });
+						flashEnabled = true;
+						flashBtn.textContent = 'Flash: ON';
+						flashBtn.style.backgroundColor = '#FFD700';
+						console.log("✓ Flash automatically enabled!");
+					} catch (e) {
+						console.log("Could not auto-enable flash:", e);
+					}
+				}
+			}
+		} catch (error) {
+			console.log("Flash detection info:", error.message);
+		}
+	}
+
+	startBtn.addEventListener('click', async () => {
+		try {
+			// Request back camera specifically, with optional torch constraint
+			const constraints = {
+				video: {
+					facingMode: "environment", // "environment" = back camera, "user" = front camera
+					width: { ideal: 1280 },
+					height: { ideal: 720 },
+					torch: true  // Experimental: request torch/flash
+				},
+				audio: false
+			};
+
+			currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+			video.srcObject = currentStream;
+
+			// Detect and enable flash after stream is ready
+			await detectAndEnableFlash();
+
+			// Update UI
+			startBtn.style.display = 'none';
+			captureBtn.style.display = 'inline-block';
+			stopBtn.style.display = 'inline-block';
+			console.log("Camera permission granted!");
+
+		} catch (error) {
+			console.error("Camera access error:", error);
+			
+			if (error.name === "NotAllowedError") {
+				alert("Camera permission was denied. Please enable it in your browser settings.");
+			} else if (error.name === "NotFoundError") {
+				alert("No camera device found on this device.");
+			} else {
+				alert("Error accessing camera: " + error.message);
+			}
+		}
+	});
+
+	captureBtn.addEventListener('click', () => {
+		try {
+			const ctx = canvas.getContext('2d');
+			ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+			
+			// Convert canvas to base64 image
+			const imageData = canvas.toDataURL('image/jpeg', 0.9);
+			
+			// Display preview
+			photoPreview.src = imageData;
+			photoPreview.style.display = 'block';
+			video.style.display = 'none';
+			
+			// Send to backend
+			sendImageToBackend(imageData);
+			
+			console.log("Photo captured!");
+		} catch (error) {
+			console.error("Error capturing photo:", error);
+			alert("Error capturing photo: " + error.message);
+		}
+	});
+
+	stopBtn.addEventListener('click', () => {
+		if (currentStream) {
+			currentStream.getTracks().forEach(track => track.stop());
+			video.srcObject = null;
+			currentStream = null;
+		}
+
+		// Reset UI
+		startBtn.style.display = 'inline-block';
+		captureBtn.style.display = 'none';
+		stopBtn.style.display = 'none';
+		flashBtn.style.display = 'none';
+		retakeBtn.style.display = 'none';
+		downloadBtn.style.display = 'none';
+		photoPreview.style.display = 'none';
+		video.style.display = 'block';
+		photoDownloadUrl = null;
+		flashEnabled = false;
+	});
+
+	// Flash toggle button
+	flashBtn.addEventListener('click', async () => {
+		if (!flashSupported || !imageCaptureObj) {
+			alert("Flash is not supported on this device or browser.");
+			return;
+		}
+
+		try {
+			flashEnabled = !flashEnabled;
+			await imageCaptureObj.setOptions({ torch: flashEnabled });
+			flashBtn.textContent = flashEnabled ? 'Flash: ON' : 'Flash: OFF';
+			flashBtn.style.backgroundColor = flashEnabled ? '#FFD700' : '';
+			console.log(`Flash turned ${flashEnabled ? 'ON' : 'OFF'}`);
+		} catch (error) {
+			console.error("Error toggling flash:", error);
+			alert("Could not toggle flash: " + error.message);
+		}
+	});
+
+	retakeBtn.addEventListener('click', () => {
+		// Reset photo preview
+		photoPreview.src = '';
+		photoPreview.style.display = 'none';
+		video.style.display = 'block';
+		retakeBtn.style.display = 'none';
+		downloadBtn.style.display = 'none';
+		captureBtn.style.display = 'inline-block';
+		photoDownloadUrl = null;
+	});
+
+	downloadBtn.addEventListener('click', async () => {
+		if (photoDownloadUrl) {
+			// Launch the HUIS app first, then download the photo.
+			try {
+				const response = await fetch('/launch_app', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json'
+					}
+				});
+				const result = await response.json();
+				console.log("App launch result:", result);
+			} catch (error) {
+				console.error("Error launching app:", error);
+			}
+
+			// Then download the photo
+			window.location.href = photoDownloadUrl;
+		}
+	});
+
+	async function sendImageToBackend(imageData) {
+		try {
+			const response = await fetch('/process_image', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({ image: imageData })
+			});
+
+			const result = await response.json();
+			console.log("Server response:", result);
+			
+			if (result.status === "success") {
+				photoDownloadUrl = result.download_url;
+				captureBtn.style.display = 'none';
+				retakeBtn.style.display = 'inline-block';
+				downloadBtn.style.display = 'inline-block';
+				alert("Image captured and saved to Downloads! Click 'Download and Open HUIS App' to download and launch the app.");
+			} else {
+				alert("Error processing image: " + result.message);
+			}
+
+		} catch (error) {
+			console.error("Error sending image to backend:", error);
+			alert("Error processing image: " + error.message);
+		}
+	}
+
+	// Clean up photo when page reloads or closes
+	window.addEventListener('beforeunload', async () => {
+		// Send cleanup request to backend
+		if (photoDownloadUrl) {
+			try {
+				await fetch(photoDownloadUrl.replace('/download_photo/', '/cleanup_photo/'), {
+					method: 'POST'
+				});
+			} catch (error) {
+				console.error("Error cleaning up photo:", error);
+			}
+		}
+	});
+	</script>
+</html>
